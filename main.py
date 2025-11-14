@@ -1,0 +1,158 @@
+import json
+import os
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import whisper
+import tempfile
+import io
+from pydub import AudioSegment
+
+# --- 1. Load All Models & Data on Startup ---
+print("Loading data and models...")
+
+# --- Load the Whisper model ---
+# We use "tiny.en" - it's fast and perfect for a hackathon.
+WHISPER_MODEL = whisper.load_model("tiny.en")
+print("Successfully loaded Whisper model 'tiny.en'")
+
+# --- Global "Brains" of the App ---
+WORD_MAP = {}
+ALPHABET_MAP = {}
+NUMBER_MAP = {}
+
+app = FastAPI(
+    title="SignBridge Backend",
+    description="Handles real-time sign language translation.",
+    version="1.0.0"
+)
+
+# --- Add CORS Middleware ---
+# This lets your website (on a different domain) talk to this backend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+# --- 2. Load Translation Maps on Startup ---
+@app.on_event("startup")
+def load_data():
+    """Load the translation maps from JSON files when the server starts."""
+    global WORD_MAP, ALPHABET_MAP, NUMBER_MAP
+    
+    try:
+        with open("words.json", "r") as f:
+            WORD_MAP = json.load(f)
+        print(f"Successfully loaded {len(WORD_MAP)} words.")
+    except FileNotFoundError:
+        print("WARNING: 'words.json' not found. Word lookup will be empty.")
+    
+    try:
+        with open("alphabet.json", "r") as f:
+            ALPHABET_MAP = json.load(f)
+        print(f"Successfully loaded {len(ALPHABET_MAP)} alphabet letters.")
+    except FileNotFoundError:
+        print("WARNING: 'alphabet.json' not found. Spelling fallback will fail.")
+
+    try:
+        with open("numbers.json", "r") as f:
+            NUMBER_MAP = json.load(f)
+        print(f"Successfully loaded {len(NUMBER_MAP)} numbers.")
+    except FileNotFoundError:
+        print("INFO: 'numbers.json' not found. Number lookup will be empty.")
+
+# --- 3. The "Smart Translator" Logic ---
+async def get_translation_urls(text: str) -> list[str]:
+    """
+    Processes text and returns a list of video URLs.
+    Tries words, then numbers, then falls back to spelling.
+    """
+    urls_to_play = []
+    # Clean the text of common punctuation
+    cleaned_text = text.lower().strip(" .,?!")
+    words = cleaned_text.split()
+
+    for word in words:
+        if word in WORD_MAP:
+            urls_to_play.append(WORD_MAP[word])
+        elif word in NUMBER_MAP:
+            urls_to_play.append(NUMBER_MAP[word])
+        else:
+            # Word not found. Fallback to spelling
+            print(f"Word not found: '{word}'. Falling back to spelling.")
+            for char in word:
+                if char in ALPHABET_MAP:
+                    urls_to_play.append(ALPHABET_MAP[char])
+                else:
+                    print(f"Skipping unknown char: '{char}'")
+    
+    return urls_to_play
+
+# --- 4. WebSocket Endpoint (For Chrome Extension) ---
+@app.websocket("/ws/translate")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("Chrome Extension connected.")
+    
+    try:
+        while True:
+            # 1. Receive raw audio data (comes as .webm blobs from the extension)
+            audio_data = await websocket.receive_bytes()
+            
+            # 2. Audio Conversion (In-Memory)
+            try:
+                audio_segment = AudioSegment.from_file(io.BytesIO(audio_data), format="webm")
+                wav_io = io.BytesIO()
+                audio_segment.export(wav_io, format="wav", parameters=["-ac", "1", "-ar", "16000"])
+                wav_data = wav_io.getvalue()
+            except Exception as e:
+                print(f"Audio conversion error: {e}")
+                continue # Skip this chunk
+
+            # 3. Run Whisper Transcription
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
+                temp_file.write(wav_data)
+                temp_file.flush()
+                
+                result = WHISPER_MODEL.transcribe(temp_file.name)
+                transcript_text = result.get("text", "").strip()
+
+            # 4. Run the "Smart Translator" and send URLs
+            if transcript_text:
+                print(f"Whisper transcript: '{transcript_text}'")
+                urls = await get_translation_urls(transcript_text)
+                
+                if urls:
+                    print(f"Sending {len(urls)} URLs to extension...")
+                    for url in urls:
+                        await websocket.send_text(url) # Send one URL at a time
+            
+    except WebSocketDisconnect:
+        print("Client disconnected.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+# --- 5. HTTP Endpoints (For Website Team & Swagger) ---
+
+# This is the one that will show up in Swagger UI
+@app.post("/api/translate-text", summary="Translate Text to Sign URLs")
+async def http_translate_text(data: dict):
+    """
+    Takes a JSON with {"text": "Hello 123"} and returns a list of
+    video URLs for the website to play.
+    """
+    text = data.get("text", "")
+    if not text:
+        return {"urls": []}
+    
+    urls = await get_translation_urls(text)
+    print(f"Sending {len(urls)} URLs to website.")
+    return {"urls": urls}
+
+# This is the root (homepage) endpoint
+@app.get("/", summary="Check Backend Status")
+def read_root():
+    """A simple endpoint to check if the server is running."""
+    return {"status": "SignBridge Backend is running!"}

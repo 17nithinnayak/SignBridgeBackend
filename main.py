@@ -151,6 +151,29 @@ async def http_translate_text(data: dict):
     print(f"Sending {len(urls)} URLs to website.")
     return {"urls": urls}
 
+@app.get("/api/generate-quiz", summary="Generate a 4-Option Sign Language Quiz")
+async def generate_quiz():
+    """
+    Picks a random video from the 'words' list and returns it,
+    along with 3 incorrect options, to build a quiz.
+    """
+    word_list = list(WORD_MAP.keys())
+    
+    # Handle case where there are fewer than 4 words
+    if len(word_list) < 4:
+        return {"error": "Not enough words in the dictionary to generate a quiz."}
+        
+    quiz_options = random.sample(word_list, 4)
+    correct_answer = quiz_options[0]
+    video_url = WORD_MAP[correct_answer]
+    random.shuffle(quiz_options)
+    
+    return {
+        "video_url": video_url,
+        "options": quiz_options,
+        "correct_answer": correct_answer
+    }
+
 # This is the root (homepage) endpoint
 @app.get("/", summary="Check Backend Status")
 def read_root():

@@ -96,44 +96,26 @@ async def get_translation_urls(text: str) -> list[str]:
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("Chrome Extension connected.")
-    
     try:
         while True:
-            # 1. Receive raw audio data (comes as .webm blobs from the extension)
-            audio_data = await websocket.receive_bytes()
-            
-            # 2. Audio Conversion (In-Memory)
-            try:
-                audio_segment = AudioSegment.from_file(io.BytesIO(audio_data), format="webm")
-                wav_io = io.BytesIO()
-                audio_segment.export(wav_io, format="wav", parameters=["-ac", "1", "-ar", "16000"])
-                wav_data = wav_io.getvalue()
-            except Exception as e:
-                print(f"Audio conversion error: {e}")
-                continue # Skip this chunk
+            # 1. Receive the FINAL transcript text (not bytes)
+            transcript_text = await websocket.receive_text()
 
-            # 3. Run Whisper Transcription
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as temp_file:
-                temp_file.write(wav_data)
-                temp_file.flush()
-                
-                result = WHISPER_MODEL.transcribe(temp_file.name)
-                transcript_text = result.get("text", "").strip()
-
-            # 4. Run the "Smart Translator" and send URLs
             if transcript_text:
-                print(f"Whisper transcript: '{transcript_text}'")
+                print(f"Transcript received: '{transcript_text}'")
+
+                # 2. Send the transcript back for subtitles
+                await websocket.send_json({"type": "transcript", "data": transcript_text})
+
+                # 3. Get URLs instantly
                 urls = await get_translation_urls(transcript_text)
-                
                 if urls:
                     print(f"Sending {len(urls)} URLs to extension...")
                     for url in urls:
-                        await websocket.send_text(url) # Send one URL at a time
-            
+                        await websocket.send_json({"type": "video", "data": url})
+
     except WebSocketDisconnect:
         print("Client disconnected.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
 
 # --- 5. HTTP Endpoints (For Website Team & Swagger) ---
 

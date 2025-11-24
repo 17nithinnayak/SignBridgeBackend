@@ -1,5 +1,4 @@
 # SignBridge Backend
-[![Ask DeepWiki](https://devin.ai/assets/askdeepwiki.png)](https://deepwiki.com/17nithinnayak/SignBridgeBackend)
 
 This repository contains the backend server for SignBridge, a real-time sign language translation application. Built with FastAPI, this server provides a robust API to convert text into a sequence of corresponding sign language video URLs. It is designed to support both a web application and a Chrome extension.
 
